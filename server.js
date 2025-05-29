@@ -199,15 +199,61 @@ app.get("/status", (req, res) => {
 
 // === TELEGRAM POLLING ===
 const ENABLE_POLLING = true;
+let pollingInterval = null;
+let isPolling = false;
+
+async function clearUpdates() {
+  try {
+    console.log('Clearing previous updates...');
+    const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/getUpdates?offset=-1`);
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error(`Error clearing updates: ${res.status} ${res.statusText} - ${errorText}`);
+      return false;
+    }
+    console.log('Previous updates cleared successfully');
+    return true;
+  } catch (error) {
+    console.error('Error clearing updates:', error);
+    return false;
+  }
+}
+
+async function stopPolling() {
+  if (pollingInterval) {
+    clearInterval(pollingInterval);
+    pollingInterval = null;
+  }
+  isPolling = false;
+  console.log('Telegram polling stopped');
+}
 
 async function pollTelegram() {
+  if (isPolling) {
+    console.log('Polling already in progress, skipping...');
+    return;
+  }
+
+  // Clear previous updates before starting
+  await clearUpdates();
+  
+  isPolling = true;
   let lastUpdate = 0;
-  setInterval(async () => {
+  
+  pollingInterval = setInterval(async () => {
+    if (!isPolling) return;
+    
     try {
       const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/getUpdates?offset=${lastUpdate + 1}`);
       if (!res.ok) {
         const errorText = await res.text();
         console.error(`Error fetching Telegram updates: ${res.status} ${res.statusText} - ${errorText}`);
+        if (res.status === 409) {
+          console.log('Conflict detected, restarting polling...');
+          await stopPolling();
+          await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+          await pollTelegram(); // Restart polling
+        }
         return;
       }
       const data = await res.json();
@@ -230,8 +276,24 @@ async function pollTelegram() {
   }, 1000);
 }
 
+// Handle process termination
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received, stopping server...');
+  await stopPolling();
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log('SIGINT received, stopping server...');
+  await stopPolling();
+  process.exit(0);
+});
+
 if (ENABLE_POLLING) {
-  pollTelegram();
+  pollTelegram().catch(error => {
+    console.error('Failed to start polling:', error);
+    process.exit(1);
+  });
 }
 
 // === AUTH VISIT HANDLER ===
