@@ -276,26 +276,24 @@ async function pollTelegram() {
   
   isPolling = true;
   let lastUpdate = 0;
-  restartAttempts = 0; // Сбрасываем счетчик попыток при успешном старте
+  restartAttempts = 0;
   
   pollingInterval = setInterval(async () => {
     if (!isPolling) return;
     
     try {
-      // Добавляем параметр timeout=1 для более быстрого ответа при ошибках
       const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/getUpdates?offset=${lastUpdate + 1}&timeout=1`);
       if (!res.ok) {
         const errorText = await res.text();
-        console.error(`Error fetching Telegram updates: ${res.status} ${res.statusText} - ${errorText}`);
         
         if (res.status === 409) {
+          // Упрощаем логирование для конфликтов, так как они не критичны
+          console.log('Telegram API conflict detected, restarting polling...');
           restartAttempts++;
-          console.log(`Conflict detected (attempt ${restartAttempts}/${MAX_RESTART_ATTEMPTS}), restarting polling...`);
           
           if (restartAttempts >= MAX_RESTART_ATTEMPTS) {
-            console.log('Max restart attempts reached, stopping polling...');
+            console.log('Taking a longer break before next polling attempt...');
             await stopPolling();
-            // Ждем дольше перед следующей попыткой
             setTimeout(() => {
               restartAttempts = 0;
               pollTelegram();
@@ -304,10 +302,11 @@ async function pollTelegram() {
           }
           
           await stopPolling();
-          // Увеличиваем задержку с каждой попыткой
           const delay = RESTART_DELAY * restartAttempts;
-          console.log(`Waiting ${delay/1000} seconds before next attempt...`);
           setTimeout(() => pollTelegram(), delay);
+        } else {
+          // Для других ошибок оставляем подробное логирование
+          console.error(`Error fetching Telegram updates: ${res.status} ${res.statusText} - ${errorText}`);
         }
         return;
       }
@@ -322,12 +321,14 @@ async function pollTelegram() {
             if (userId && step && action && users[userId]) {
               users[userId].status[step] = action === 'ok' ? 'ok' : 'fail';
               saveUsers();
+              console.log(`Updated status for user ${userId}, step ${step}: ${action}`);
             }
           }
         }
       }
     } catch (error) {
-      console.error('Error in pollTelegram:', error);
+      // Упрощаем логирование для ошибок сети
+      console.log('Network error in polling, will retry...');
     }
   }, 1000);
 }
