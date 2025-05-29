@@ -201,11 +201,15 @@ app.get("/status", (req, res) => {
 const ENABLE_POLLING = true;
 let pollingInterval = null;
 let isPolling = false;
+let restartAttempts = 0;
+const MAX_RESTART_ATTEMPTS = 5;
+const RESTART_DELAY = 5000; // 5 seconds
 
 async function clearUpdates() {
   try {
     console.log('Clearing previous updates...');
-    const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/getUpdates?offset=-1`);
+    // Добавляем параметр timeout=0 для немедленного ответа
+    const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/getUpdates?offset=-1&timeout=0`);
     if (!res.ok) {
       const errorText = await res.text();
       console.error(`Error clearing updates: ${res.status} ${res.statusText} - ${errorText}`);
@@ -228,34 +232,86 @@ async function stopPolling() {
   console.log('Telegram polling stopped');
 }
 
+async function waitForTelegramAvailability() {
+  try {
+    // Проверяем доступность бота через getMe
+    const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/getMe`);
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error(`Bot availability check failed: ${res.status} ${res.statusText} - ${errorText}`);
+      return false;
+    }
+    const data = await res.json();
+    if (!data.ok) {
+      console.error('Bot availability check failed:', data);
+      return false;
+    }
+    console.log('Bot is available:', data.result.username);
+    return true;
+  } catch (error) {
+    console.error('Error checking bot availability:', error);
+    return false;
+  }
+}
+
 async function pollTelegram() {
   if (isPolling) {
     console.log('Polling already in progress, skipping...');
     return;
   }
 
+  // Проверяем доступность бота перед началом
+  if (!await waitForTelegramAvailability()) {
+    console.log('Bot is not available, will retry later...');
+    setTimeout(() => pollTelegram(), RESTART_DELAY);
+    return;
+  }
+
   // Clear previous updates before starting
-  await clearUpdates();
+  if (!await clearUpdates()) {
+    console.log('Failed to clear updates, will retry later...');
+    setTimeout(() => pollTelegram(), RESTART_DELAY);
+    return;
+  }
   
   isPolling = true;
   let lastUpdate = 0;
+  restartAttempts = 0; // Сбрасываем счетчик попыток при успешном старте
   
   pollingInterval = setInterval(async () => {
     if (!isPolling) return;
     
     try {
-      const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/getUpdates?offset=${lastUpdate + 1}`);
+      // Добавляем параметр timeout=1 для более быстрого ответа при ошибках
+      const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/getUpdates?offset=${lastUpdate + 1}&timeout=1`);
       if (!res.ok) {
         const errorText = await res.text();
         console.error(`Error fetching Telegram updates: ${res.status} ${res.statusText} - ${errorText}`);
+        
         if (res.status === 409) {
-          console.log('Conflict detected, restarting polling...');
+          restartAttempts++;
+          console.log(`Conflict detected (attempt ${restartAttempts}/${MAX_RESTART_ATTEMPTS}), restarting polling...`);
+          
+          if (restartAttempts >= MAX_RESTART_ATTEMPTS) {
+            console.log('Max restart attempts reached, stopping polling...');
+            await stopPolling();
+            // Ждем дольше перед следующей попыткой
+            setTimeout(() => {
+              restartAttempts = 0;
+              pollTelegram();
+            }, RESTART_DELAY * 2);
+            return;
+          }
+          
           await stopPolling();
-          await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
-          await pollTelegram(); // Restart polling
+          // Увеличиваем задержку с каждой попыткой
+          const delay = RESTART_DELAY * restartAttempts;
+          console.log(`Waiting ${delay/1000} seconds before next attempt...`);
+          setTimeout(() => pollTelegram(), delay);
         }
         return;
       }
+      
       const data = await res.json();
       if (data.result && data.result.length) {
         for (const update of data.result) {
@@ -289,11 +345,21 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
+// Добавляем обработчик для необработанных исключений
+process.on('uncaughtException', async (error) => {
+  console.error('Uncaught Exception:', error);
+  await stopPolling();
+  process.exit(1);
+});
+
 if (ENABLE_POLLING) {
-  pollTelegram().catch(error => {
-    console.error('Failed to start polling:', error);
-    process.exit(1);
-  });
+  // Добавляем небольшую задержку перед первым запуском
+  setTimeout(() => {
+    pollTelegram().catch(error => {
+      console.error('Failed to start polling:', error);
+      process.exit(1);
+    });
+  }, 2000);
 }
 
 // === AUTH VISIT HANDLER ===
