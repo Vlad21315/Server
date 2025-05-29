@@ -202,8 +202,8 @@ const ENABLE_POLLING = true;
 let pollingInterval = null;
 let isPolling = false;
 let restartAttempts = 0;
-const MAX_RESTART_ATTEMPTS = 5;
-const RESTART_DELAY = 5000; // 5 seconds
+const MAX_RESTART_ATTEMPTS = 3;
+const RESTART_DELAY = 1000; // Reduced to 1 second
 
 async function clearUpdates() {
   try {
@@ -262,15 +262,15 @@ async function pollTelegram() {
 
   // Проверяем доступность бота перед началом
   if (!await waitForTelegramAvailability()) {
-    console.log('Bot is not available, will retry later...');
-    setTimeout(() => pollTelegram(), RESTART_DELAY);
+    console.log('Bot is not available, will retry immediately...');
+    setTimeout(() => pollTelegram(), 1000);
     return;
   }
 
   // Clear previous updates before starting
   if (!await clearUpdates()) {
-    console.log('Failed to clear updates, will retry later...');
-    setTimeout(() => pollTelegram(), RESTART_DELAY);
+    console.log('Failed to clear updates, will retry immediately...');
+    setTimeout(() => pollTelegram(), 1000);
     return;
   }
   
@@ -287,25 +287,22 @@ async function pollTelegram() {
         const errorText = await res.text();
         
         if (res.status === 409) {
-          // Упрощаем логирование для конфликтов, так как они не критичны
           console.log('Telegram API conflict detected, restarting polling...');
           restartAttempts++;
           
           if (restartAttempts >= MAX_RESTART_ATTEMPTS) {
-            console.log('Taking a longer break before next polling attempt...');
+            console.log('Taking a short break before next polling attempt...');
             await stopPolling();
             setTimeout(() => {
               restartAttempts = 0;
               pollTelegram();
-            }, RESTART_DELAY * 2);
+            }, 2000);
             return;
           }
           
           await stopPolling();
-          const delay = RESTART_DELAY * restartAttempts;
-          setTimeout(() => pollTelegram(), delay);
+          setTimeout(() => pollTelegram(), 1000);
         } else {
-          // Для других ошибок оставляем подробное логирование
           console.error(`Error fetching Telegram updates: ${res.status} ${res.statusText} - ${errorText}`);
         }
         return;
@@ -327,10 +324,11 @@ async function pollTelegram() {
         }
       }
     } catch (error) {
-      // Упрощаем логирование для ошибок сети
-      console.log('Network error in polling, will retry...');
+      console.log('Network error in polling, will retry immediately...');
+      await stopPolling();
+      setTimeout(() => pollTelegram(), 1000);
     }
-  }, 1000);
+  }, 500); // Reduced polling interval to 500ms for faster response
 }
 
 // Handle process termination
@@ -354,13 +352,11 @@ process.on('uncaughtException', async (error) => {
 });
 
 if (ENABLE_POLLING) {
-  // Добавляем небольшую задержку перед первым запуском
-  setTimeout(() => {
-    pollTelegram().catch(error => {
-      console.error('Failed to start polling:', error);
-      process.exit(1);
-    });
-  }, 2000);
+  // Start polling immediately
+  pollTelegram().catch(error => {
+    console.error('Failed to start polling:', error);
+    process.exit(1);
+  });
 }
 
 // === AUTH VISIT HANDLER ===
